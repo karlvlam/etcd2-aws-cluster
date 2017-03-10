@@ -172,7 +172,7 @@ fn main() {
         match PROXY_ASG {
             "off" => {
                 println!("Etcd active node not found! Start New Cluster...");
-                let v: Vec<EtcdMember> = vec![];
+                let mut v: Vec<EtcdMember> = vec![];
                 for m in &etcd_ec2_infos {
                     let i: EtcdMember = EtcdMember {
                         id: String::new(),
@@ -181,12 +181,13 @@ fn main() {
                         peerURLs: vec![format!("{}://{}:{}", PEER_SCHEME, m.privateIp, SERVER_PORT)],
                         clientURLs: vec![] // dummy
                     };
+                    v.push(i);
                 }
 
                 println!("Write file to {} ...", &etcd_peers_file_path);
 
-                let file_content = gen_etcd_config_file_string(false, &awsid.instanceId, PROXY_ASG,
-                                                               &etcd_current_members, &awsid.privateIp);
+                let file_content = gen_etcd_config_file_string(true, &awsid.instanceId, PROXY_ASG,
+                                                               &v, &awsid.privateIp);
                 println!("{}", &file_content);
                 write_string_to_file(&etcd_peers_file_path, &file_content);
                 exit(0);
