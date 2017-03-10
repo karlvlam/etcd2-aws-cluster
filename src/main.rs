@@ -118,17 +118,17 @@ fn main() {
     /*
     get EC2 instances by auto-scaling-group
     */
-    let mut etcd_ec2_ips:Vec<String> = vec![];
+    let mut etcd_ec2_infos:Vec<AwsId> = vec![];
     loop {
         println!("Search for ASG node ...");
-        let etcd_ec2_ips = match extract_ec2_ip_from_asg_name(&ASG_NAME, AWS_REGION) {
-            Some(ec2ips) => {
-                if ec2ips.len() >= min_etcd_node {
-                    etcd_ec2_ips = ec2ips;
+        let ec2infos = match extract_ec2info_from_asg_name(&ASG_NAME, AWS_REGION) {
+            Some(ec2infos) => {
+                if ec2infos.len() >= min_etcd_node {
+                    etcd_ec2_infos = ec2infos;
                     break;
                 }
                 println!("Number of ETCD node does not meet the min {}/{}, retry in 10 seconds...",
-                         ec2ips.len(), min_etcd_node);
+                         ec2infos.len(), min_etcd_node);
                 sleep(Duration::from_secs(10));
             }
             None => {
@@ -148,10 +148,10 @@ fn main() {
     let mut etcd_active_node:String = String::new();
     let mut etcd_current_members:Vec<EtcdMember> = vec![];
     let mut etcd_active_node_client_url = String::new();
-    for _item in &etcd_ec2_ips{
-        match get_etcd_members(&_item, &CLIENT_SCHEME, &CLIENT_PORT) {
+    for _item in &etcd_ec2_infos{
+        match get_etcd_members(&_item.privateIp, &CLIENT_SCHEME, &CLIENT_PORT) {
             Some(list) => {
-                etcd_active_node = _item.to_string();
+                etcd_active_node = _item.privateIp.to_string();
                 etcd_current_members = list;
                 etcd_active_node_client_url = format!("{}://{}:{}",
                                                       &CLIENT_SCHEME,&etcd_active_node,&CLIENT_PORT);
@@ -163,6 +163,40 @@ fn main() {
         }
     }
     println!("{:#?}, {:#?}", etcd_active_node, etcd_current_members);
+
+    /*********************************************************
+    if no active node, new cluster
+    **********************************************************/
+
+    if etcd_current_members.len() == 0 {
+        match PROXY_ASG {
+            "off" => {
+                println!("Etcd active node not found! Start New Cluster...");
+                let v: Vec<EtcdMember> = vec![];
+                for m in &etcd_ec2_infos {
+                    let i: EtcdMember = EtcdMember {
+                        id: String::new(),
+                        // dummy
+                        name: m.instanceId.to_string(),
+                        peerURLs: vec![format!("{}://{}:{}", PEER_SCHEME, m.privateIp, SERVER_PORT)],
+                        clientURLs: vec![] // dummy
+                    };
+                }
+
+                println!("Write file to {} ...", &etcd_peers_file_path);
+
+                let file_content = gen_etcd_config_file_string(false, &awsid.instanceId, PROXY_ASG,
+                                                               &etcd_current_members, &awsid.privateIp);
+                println!("{}", &file_content);
+                write_string_to_file(&etcd_peers_file_path, &file_content);
+                exit(0);
+            }
+            _ => {
+                println!("Etcd active node not found! Exit...");
+                exit(0);
+            }
+        }
+    }
 
     println!("Looking for good/bad members from ETCD member list...");
     let mut etcd_good_members:Vec<EtcdMember> = vec![];
@@ -219,8 +253,6 @@ fn main() {
         "off" => {
             // Case for etcd cluster member
             println!("PROXY_ASG: {}", PROXY_ASG);
-            // TODO: case 1 - new cluster
-            // TODO: case 2 - existing cluster
             println!("Adding current node as new ETCD member...");
             add_etcd_members(&etcd_active_node_client_url, &awsid, &PEER_SCHEME, &SERVER_PORT);
 
@@ -242,7 +274,6 @@ fn main() {
             println!("{}", &file_content);
             write_string_to_file(&etcd_peers_file_path, &file_content);
             exit(0);
-            // TODO: case 2b - add current node to existing cluster
         }
         _ => {
             println!("Something went wrong: unknown PROXY_ASG");
@@ -274,7 +305,7 @@ fn get_url(url: &str) -> String {
             res.read_to_string(&mut result);
         }
         Err(e) => {
-           println!("HTTP_GET_ERROR : {} : {:#?}", url, e);
+            println!("HTTP_GET_ERROR : {} : {:#?}", url, e);
         }
     }
     result
@@ -403,7 +434,7 @@ fn find_asg_name_from_instance_id(asgs: Vec<AutoScalingGroup>, instance_id: &Str
     None
 }
 
-fn extract_ec2_ip_from_asg_name(asg_name: &String, region: Region) -> Option<Vec<String>> {
+fn extract_ec2info_from_asg_name(asg_name: &String, region: Region) -> Option<Vec<AwsId>> {
     let provider = DefaultCredentialsProvider::new().unwrap();
     let client = Ec2Client::new(default_tls_client().unwrap(), provider, region);
     let opt = DescribeInstancesRequest {
@@ -421,14 +452,25 @@ fn extract_ec2_ip_from_asg_name(asg_name: &String, region: Region) -> Option<Vec
     match client.describe_instances(&opt) {
         Ok(result) => {
             let r = result.reservations.unwrap();
-            let mut v:Vec<String> = vec![];
+            let mut v:Vec<AwsId> = vec![];
             for _r in r {
 
                 for __r in _r.instances.unwrap(){
-                    match __r.private_ip_address {
-                        Some(ip) => v.push(ip),
+                    println!("{:#?}", __r);
+                    let mut awsid = AwsId {
+                        region: String::new(),
+                        instanceId: String::new(),
+                        privateIp: String::new()
+                    };
+                    match __r.instance_id {
+                        Some(id) => awsid.instanceId = id,
                         None => continue
                     }
+                    match __r.private_ip_address {
+                        Some(ip) => awsid.privateIp = ip,
+                        None => continue
+                    }
+                    v.push(awsid)
                 }
             }
             match v.len() {
