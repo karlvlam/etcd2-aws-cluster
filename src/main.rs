@@ -23,7 +23,7 @@ use rusoto::autoscaling::{AutoscalingClient, AutoScalingGroupNamesType, AutoScal
 use rusoto::ec2::{Ec2Client, DescribeInstancesRequest,Filter};
 
 
-const min_etcd_node:usize = 5;
+const min_etcd_node:usize = 3; // etcd cluster should has at least 3 nodes !!!
 
 // ETCD API https://coreos.com/etcd/docs/latest/v2/members_api.html
 const api_add_ok: u16 = 201;
