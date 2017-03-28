@@ -1,7 +1,7 @@
 #[macro_use]
 extern crate serde_derive;
 
-extern crate hyper;
+extern crate curl;
 extern crate serde_json;
 extern crate rusoto;
 use std::process::exit;
@@ -11,13 +11,15 @@ use std::io::prelude::*;
 use std::fs::File;
 use std::borrow::ToOwned;
 use std::thread::{sleep};
+use std::cell::{RefCell, Cell};
 
 use std::io::Read;
 use std::ops::Add;
-use hyper::client::Client;
-use hyper::header::{Header, HeaderFormat, Headers};
 
 use std::default::Default;
+
+use curl::easy::{Easy, List};
+
 use rusoto::{DefaultCredentialsProvider, Region, default_tls_client};
 use rusoto::autoscaling::{AutoscalingClient, AutoScalingGroupNamesType, AutoScalingGroup};
 use rusoto::ec2::{Ec2Client, DescribeInstancesRequest,Filter};
@@ -296,62 +298,85 @@ fn env(key:&str, d:&str) -> String {
 }
 
 fn get_url(url: &str) -> String {
-    let mut result = String::new();
-    let mut client = Client::new();
-    // TODO: make timeout works!!!
-    client.set_read_timeout(Some(Duration::from_millis(1000)));
-    client.set_write_timeout(Some(Duration::from_millis(1000)));
-    match client.get(url).send() {
-        Ok(mut res) => {
-            res.read_to_string(&mut result);
-        }
+    let mut easy = Easy::new();
+    let count = Cell::new(1);
+    let v = RefCell::new(Vec::new());
+
+    easy.url(url).unwrap();
+    easy.timeout(Duration::from_millis(5000));
+    let mut transfer = easy.transfer();
+    transfer.write_function(|data|{
+        v.borrow_mut().extend_from_slice(data);
+        Ok(data.len())
+    }).unwrap();
+    match transfer.perform() {
+        Ok(_) => {
+            let v = v.clone().into_inner();
+            let s = std::str::from_utf8(&v).unwrap_or("");
+            s.to_string()
+        },
         Err(e) => {
-            println!("HTTP_GET_ERROR : {} : {:#?}", url, e);
+            println!("Error: {}", e);
+            "".to_string()
         }
     }
-    result
+
 }
 fn add_etcd_members(client_url:&str, awsid: &AwsId, peer_schema: &str, server_port: &str){
-    let mut result = String::new();
-    let mut client = Client::new();
-    // TODO: make timeout works!!!
-    client.set_read_timeout(Some(Duration::from_millis(1000)));
-    client.set_write_timeout(Some(Duration::from_millis(1000)));
-    let url = &format!("{}/v2/members",client_url);
-    let body = &format!("{{\"name\":\"{}\", \"peerURLs\": [\"{}://{}:{}\"]}}",
-                        awsid.instanceId, peer_schema, awsid.privateIp, server_port);
-    println!("{}", body);
 
-    let mut headers = Headers::new();
-    headers.set_raw("Content-Type",vec![b"application/json".to_vec()]);
-    match client.post(url).headers(headers).body(body).send() {
-        Ok(mut res) => {
-            println!("ETCD_ADD : {} - {}", res.url, res.status);
-        }
+    let mut easy = Easy::new();
+    let url = &format!("{}/v2/members",client_url);
+    let body_str = &format!("{{\"name\":\"{}\", \"peerURLs\": [\"{}://{}:{}\"]}}",
+                        awsid.instanceId, peer_schema, awsid.privateIp, server_port);
+    let mut body = body_str.as_bytes();
+    //println!("{}", body);
+    let mut headers = List::new();
+    headers.append("Content-Type: application/json").unwrap();
+
+    easy.url(url).unwrap();
+    easy.http_headers(headers).unwrap();
+
+    easy.timeout(Duration::from_millis(5000));
+
+    easy.post(true).unwrap();
+    easy.post_field_size(body.len() as u64).unwrap();
+
+    let mut transfer = easy.transfer();
+    transfer.read_function(|buf|{
+        Ok(body.read(buf).unwrap_or(0))
+    }).unwrap();
+    match transfer.perform() {
+        Ok(_) => {
+            println!("ETCD_ADD : {} - ", url);
+        },
         Err(e) => {
-            println!("ETCD_ADD_ERROR : {} : {:#?}", url, e);
+            println!("Error: {}", e);
         }
     }
     sleep(Duration::from_secs(3));
 }
 fn delete_etcd_members(client_url:&str, list:&Vec<EtcdMember>){
-    let mut result = String::new();
-    let mut client = Client::new();
-    // TODO: make timeout works!!!
-    client.set_read_timeout(Some(Duration::from_millis(1000)));
-    client.set_write_timeout(Some(Duration::from_millis(1000)));
+
     for _m in list {
         let url = &format!("{}/v2/members/{}",client_url,_m.id);
-        match client.delete(url).send() {
-            Ok(mut res) => {
-                println!("ETCD_DEL : {} - {}", res.url, res.status);
+        // ########################################
+        let mut easy = Easy::new();
+        easy.custom_request("DELETE").unwrap();
+        easy.url(url).unwrap();
+        easy.timeout(Duration::from_millis(5000));
+
+        let mut transfer = easy.transfer();
+        match transfer.perform() {
+            Ok(_) => {
+                println!("ETCD_DEL : {} - ", url);
             }
             Err(e) => {
                 println!("ETCD_DEL_ERROR : {} : {:#?}", url, e);
             }
         }
     }
-    sleep(Duration::from_secs(5));
+
+    sleep(Duration::from_secs(3));
 }
 
 #[derive(Serialize, Deserialize, Debug)]

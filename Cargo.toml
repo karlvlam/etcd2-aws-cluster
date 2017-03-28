@@ -4,7 +4,7 @@ version = "0.1.0"
 authors = ["Karl Lam <karl.v.lam@gmail.com>"]
 
 [dependencies]
-hyper = "0.10.5"
+curl = "0.4.6"
 serde = "0.9.10"
 serde_json = "0.9.8"
 serde_derive = "0.9.10"
